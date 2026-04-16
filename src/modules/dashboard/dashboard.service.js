@@ -2,6 +2,30 @@ import { getPool } from '../../config/database.js';
 import { endOfDay, startOfDay } from './date-range.js';
 
 const formatCurrencySum = (value) => Number(value ?? 0);
+const formatRecentActivity = (entry) => ({
+  id: String(entry.id),
+  partyId: String(entry.partyId),
+  partyName: entry.partyName,
+  type: entry.type,
+  reference: entry.reference,
+  amount: Number(entry.type === 'payment' ? entry.creditAmount : entry.debitAmount ?? 0),
+  date: entry.date,
+});
+
+const recentActivityQuery = `SELECT
+  l.id,
+  l.party_id AS partyId,
+  l.type,
+  l.reference,
+  l.debit_amount AS debitAmount,
+  l.credit_amount AS creditAmount,
+  l.date,
+  p.name AS partyName
+ FROM ledger_entries l
+ INNER JOIN parties p ON p.id = l.party_id
+ WHERE l.created_by = ?
+ ORDER BY l.date DESC, l.created_at DESC
+ LIMIT ?`;
 
 export const dashboardService = {
   async getSummary(userId) {
@@ -26,21 +50,8 @@ export const dashboardService = {
         [userId, todayStart, todayEnd],
       ),
       getPool().query(
-        `SELECT
-           l.id,
-           l.party_id AS partyId,
-           l.type,
-           l.reference,
-           l.debit_amount AS debitAmount,
-           l.credit_amount AS creditAmount,
-           l.date,
-           p.name AS partyName
-         FROM ledger_entries l
-         INNER JOIN parties p ON p.id = l.party_id
-         WHERE l.created_by = ?
-         ORDER BY l.date DESC, l.created_at DESC
-         LIMIT 5`,
-        [userId],
+        recentActivityQuery,
+        [userId, 5],
       ),
     ]);
     const parties = partiesResult[0];
@@ -66,16 +77,13 @@ export const dashboardService = {
       dueTodayAmount: formatCurrencySum(
         salesEntries.reduce((sum, entry) => sum + (entry.debitAmount ?? 0), 0),
       ),
-      recentActivities: recentActivities.map((entry) => ({
-        id: String(entry.id),
-        partyId: String(entry.partyId),
-        partyName: entry.partyName,
-        type: entry.type,
-        reference: entry.reference,
-        amount: Number(entry.type === 'payment' ? entry.creditAmount : entry.debitAmount ?? 0),
-        date: entry.date,
-      })),
+      recentActivities: recentActivities.map(formatRecentActivity),
     };
+  },
+
+  async getRecentActivity(userId, limit = 50) {
+    const [rows] = await getPool().query(recentActivityQuery, [userId, limit]);
+    return rows.map(formatRecentActivity);
   },
 
   async getPartySummary(userId, partyId) {

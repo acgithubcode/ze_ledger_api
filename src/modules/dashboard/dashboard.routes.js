@@ -8,5 +8,6 @@ const dashboardRouter = Router();
 
 dashboardRouter.use(authenticate);
 dashboardRouter.get('/summary', asyncHandler(dashboardController.summary));
+dashboardRouter.get('/recent-activity', asyncHandler(dashboardController.recentActivity));
 
 export { dashboardRouter };

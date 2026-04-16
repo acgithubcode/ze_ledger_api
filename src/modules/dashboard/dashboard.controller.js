@@ -9,6 +9,11 @@ export const dashboardController = {
     sendResponse(response, StatusCodes.OK, 'Dashboard summary fetched successfully', result);
   },
 
+  async recentActivity(request, response) {
+    const result = await dashboardService.getRecentActivity(request.user.id);
+    sendResponse(response, StatusCodes.OK, 'Recent activity fetched successfully', result);
+  },
+
   async partySummary(request, response) {
     const result = await dashboardService.getPartySummary(request.user.id, request.params.partyId);
     sendResponse(response, StatusCodes.OK, 'Party summary fetched successfully', result);
