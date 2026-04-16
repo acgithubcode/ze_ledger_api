@@ -28,4 +28,9 @@ export const partyController = {
     const result = await partyService.addLedgerEntry(request.user.id, request.params.partyId, request.body);
     sendResponse(response, StatusCodes.CREATED, 'Ledger entry created successfully', result);
   },
+
+  async importSales(request, response) {
+    const result = await partyService.importSales(request.user.id, request.body);
+    sendResponse(response, StatusCodes.CREATED, 'Sales imported successfully', result);
+  },
 };

@@ -31,3 +31,23 @@ export const partyListSchema = Joi.object({
     search: Joi.string().trim().allow('').optional(),
   }).required(),
 });
+
+export const importSalesSchema = Joi.object({
+  body: Joi.object({
+    createMissingParties: Joi.boolean().default(false),
+    rows: Joi.array()
+      .items(
+        Joi.object({
+          monthName: Joi.string().trim().min(3).max(30).required(),
+          reference: Joi.string().trim().min(1).max(120).required(),
+          date: Joi.date().iso().required(),
+          partyName: Joi.string().trim().min(2).max(120).required(),
+          gstin: Joi.string().trim().allow('').max(30).optional(),
+          amount: Joi.number().positive().precision(2).required(),
+          quantity: Joi.number().precision(3).min(0).optional(),
+        }).required(),
+      )
+      .min(1)
+      .required(),
+  }).required(),
+});

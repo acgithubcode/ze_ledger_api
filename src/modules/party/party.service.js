@@ -32,6 +32,12 @@ const formatEntry = (entry) => ({
   updatedAt: entry.updatedAt,
 });
 
+const normalizeKey = (value) =>
+  String(value ?? '')
+    .trim()
+    .replace(/\s+/g, ' ')
+    .toUpperCase();
+
 export const partyService = {
   async listParties(userId, search = '') {
     const searchPattern = `%${search}%`;
@@ -240,6 +246,152 @@ export const partyService = {
       );
 
       return formatEntry(rows[0]);
+    });
+  },
+
+  async importSales(userId, payload) {
+    return withTransaction(async (connection) => {
+      const [partyRows] = await connection.query(
+        `SELECT
+           id,
+           name,
+           phone,
+           current_balance AS currentBalance,
+           status,
+           opening_balance AS openingBalance,
+           last_payment_date AS lastPaymentDate,
+           total_debit AS totalDebit,
+           total_credit AS totalCredit,
+           closing_balance AS closingBalance,
+           created_at AS createdAt,
+           updated_at AS updatedAt
+         FROM parties
+         WHERE created_by = ?`,
+        [userId],
+      );
+
+      const partyMap = new Map(
+        partyRows.map((party) => [normalizeKey(party.name), { ...party }]),
+      );
+      const createdParties = [];
+      const imported = [];
+      const duplicates = [];
+      const skipped = [];
+
+      for (const row of payload.rows) {
+        const normalizedPartyName = normalizeKey(row.partyName);
+        let party = partyMap.get(normalizedPartyName);
+        const importReference = `${row.reference.trim()} (${row.monthName})`;
+
+        if (!party && payload.createMissingParties) {
+          const [createPartyResult] = await connection.query(
+            `INSERT INTO parties
+             (name, phone, current_balance, status, opening_balance, last_payment_date, total_debit, total_credit, closing_balance, created_by)
+             VALUES (?, ?, 0, 'Dr', 0, NULL, 0, 0, 0, ?)`,
+            [row.partyName.trim(), row.gstin?.trim() || '0000000000', userId],
+          );
+
+          const [newPartyRows] = await connection.query(
+            `SELECT
+               id,
+               name,
+               phone,
+               current_balance AS currentBalance,
+               status,
+               opening_balance AS openingBalance,
+               last_payment_date AS lastPaymentDate,
+               total_debit AS totalDebit,
+               total_credit AS totalCredit,
+               closing_balance AS closingBalance,
+               created_at AS createdAt,
+               updated_at AS updatedAt
+             FROM parties
+             WHERE id = ?`,
+            [createPartyResult.insertId],
+          );
+          party = newPartyRows[0];
+          partyMap.set(normalizedPartyName, { ...party });
+          createdParties.push(formatParty(party));
+        }
+
+        if (!party) {
+          skipped.push({
+            monthName: row.monthName,
+            reference: row.reference,
+            partyName: row.partyName,
+            reason: 'Party not found',
+          });
+          continue;
+        }
+
+        const [duplicateRows] = await connection.query(
+          `SELECT id
+           FROM ledger_entries
+           WHERE created_by = ? AND party_id = ? AND type = 'sale' AND reference = ?
+           LIMIT 1`,
+          [userId, party.id, importReference],
+        );
+
+        if (duplicateRows.length > 0) {
+          duplicates.push({
+            monthName: row.monthName,
+            reference: row.reference,
+            partyName: row.partyName,
+          });
+          continue;
+        }
+
+        const amount = Number(row.amount);
+        const updatedBalance = Number(party.currentBalance) + amount;
+        const updatedDebit = Number(party.totalDebit) + amount;
+        const entryDate = new Date(row.date);
+
+        await connection.query(
+          `UPDATE parties
+           SET current_balance = ?,
+               total_debit = ?,
+               closing_balance = ?,
+               status = 'Dr'
+           WHERE id = ?`,
+          [updatedBalance, updatedDebit, updatedBalance, party.id],
+        );
+
+        const [insertResult] = await connection.query(
+          `INSERT INTO ledger_entries
+           (party_id, date, type, reference, debit_amount, credit_amount, balance, status_label, created_by)
+           VALUES (?, ?, 'sale', ?, ?, NULL, ?, 'Imported', ?)`,
+          [party.id, entryDate, importReference, amount, updatedBalance, userId],
+        );
+
+        party.currentBalance = updatedBalance;
+        party.totalDebit = updatedDebit;
+        party.closingBalance = updatedBalance;
+        party.status = 'Dr';
+        partyMap.set(normalizedPartyName, party);
+
+        imported.push({
+          id: String(insertResult.insertId),
+          monthName: row.monthName,
+          reference: importReference,
+          partyId: String(party.id),
+          partyName: party.name,
+          amount,
+          quantity: row.quantity ?? null,
+          date: entryDate,
+        });
+      }
+
+      return {
+        totalRows: payload.rows.length,
+        importedCount: imported.length,
+        duplicateCount: duplicates.length,
+        skippedCount: skipped.length,
+        createdPartiesCount: createdParties.length,
+        imported,
+        duplicates,
+        skipped,
+        createdParties,
+      };
     });
   },
 };
