@@ -8,7 +8,7 @@ export const dashboardService = {
     const todayStart = startOfDay(new Date());
     const todayEnd = endOfDay(new Date());
 
-    const [partiesResult, salesResult, paymentsResult] = await Promise.all([
+    const [partiesResult, salesResult, paymentsResult, recentActivityResult] = await Promise.all([
       getPool().query(
         'SELECT current_balance AS currentBalance FROM parties WHERE created_by = ?',
         [userId],
@@ -25,10 +25,28 @@ export const dashboardService = {
          WHERE created_by = ? AND type = 'payment' AND date BETWEEN ? AND ?`,
         [userId, todayStart, todayEnd],
       ),
+      getPool().query(
+        `SELECT
+           l.id,
+           l.party_id AS partyId,
+           l.type,
+           l.reference,
+           l.debit_amount AS debitAmount,
+           l.credit_amount AS creditAmount,
+           l.date,
+           p.name AS partyName
+         FROM ledger_entries l
+         INNER JOIN parties p ON p.id = l.party_id
+         WHERE l.created_by = ?
+         ORDER BY l.date DESC, l.created_at DESC
+         LIMIT 5`,
+        [userId],
+      ),
     ]);
     const parties = partiesResult[0];
     const salesEntries = salesResult[0];
     const paymentEntries = paymentsResult[0];
+    const recentActivities = recentActivityResult[0];
 
     const overdueParties = parties.filter((party) => party.currentBalance > 0);
 
@@ -48,6 +66,15 @@ export const dashboardService = {
       dueTodayAmount: formatCurrencySum(
         salesEntries.reduce((sum, entry) => sum + (entry.debitAmount ?? 0), 0),
       ),
+      recentActivities: recentActivities.map((entry) => ({
+        id: String(entry.id),
+        partyId: String(entry.partyId),
+        partyName: entry.partyName,
+        type: entry.type,
+        reference: entry.reference,
+        amount: Number(entry.type === 'payment' ? entry.creditAmount : entry.debitAmount ?? 0),
+        date: entry.date,
+      })),
     };
   },
 
