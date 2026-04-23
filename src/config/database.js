@@ -5,6 +5,24 @@ import { logger } from './logger.js';
 
 let pool;
 
+const ensureColumn = async (tableName, columnName, definition) => {
+  const [rows] = await pool.query(
+    `SELECT 1
+       FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE()
+        AND TABLE_NAME = ?
+        AND COLUMN_NAME = ?
+      LIMIT 1`,
+    [tableName, columnName],
+  );
+
+  if (rows.length > 0) {
+    return;
+  }
+
+  await pool.query(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`);
+};
+
 const createTables = async () => {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS users (
@@ -64,6 +82,8 @@ const createTables = async () => {
       CONSTRAINT fk_ledger_created_by FOREIGN KEY (created_by) REFERENCES users (id) ON DELETE CASCADE
     )
   `);
+
+  await ensureColumn('ledger_entries', 'invoice_data', 'LONGTEXT NULL AFTER reference');
 };
 
 export const connectDatabase = async () => {

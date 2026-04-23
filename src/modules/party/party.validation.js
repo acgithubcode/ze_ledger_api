@@ -23,6 +23,32 @@ export const addLedgerEntrySchema = Joi.object({
     amount: Joi.number().positive().precision(2).required(),
     reference: Joi.string().trim().min(2).max(120).required(),
     date: Joi.date().iso().optional(),
+    invoiceData: Joi.object({
+      partyName: Joi.string().trim().min(2).max(120).required(),
+      partyAddress: Joi.string().trim().min(5).max(500).required(),
+      gstin: Joi.string().trim().min(5).max(30).required(),
+      invoiceNo: Joi.string().trim().min(1).max(120).required(),
+      vehicleNo: Joi.string().trim().min(1).max(60).required(),
+      subtotal: Joi.number().min(0).precision(2).required(),
+      sgst: Joi.number().precision(2).required(),
+      cgst: Joi.number().precision(2).required(),
+      igst: Joi.number().precision(2).required(),
+      roundOff: Joi.number().precision(2).required(),
+      total: Joi.number().positive().precision(2).required(),
+      items: Joi.array()
+        .items(
+          Joi.object({
+            description: Joi.string().trim().min(1).max(500).required(),
+            hsnCode: Joi.string().trim().min(1).max(40).required(),
+            quantity: Joi.number().positive().precision(3).required(),
+            unit: Joi.string().trim().min(1).max(20).required(),
+            rate: Joi.number().positive().precision(2).required(),
+            amount: Joi.number().positive().precision(2).required(),
+          }).required(),
+        )
+        .min(1)
+        .required(),
+    }).optional(),
   }).required(),
 });
 

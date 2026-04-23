@@ -24,6 +24,7 @@ const formatEntry = (entry) => ({
   date: entry.date,
   type: entry.type,
   reference: entry.reference,
+  invoiceData: parseInvoiceData(entry.invoiceData),
   debitAmount: entry.debitAmount === null ? null : Number(entry.debitAmount),
   creditAmount: entry.creditAmount === null ? null : Number(entry.creditAmount),
   balance: Number(entry.balance),
@@ -37,6 +38,32 @@ const normalizeKey = (value) =>
     .trim()
     .replace(/\s+/g, ' ')
     .toUpperCase();
+
+const parseInvoiceData = (value) => {
+  if (!value) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+};
+
+const roundCurrency = (value) => Number(Number(value).toFixed(2));
+
+const serializeInvoiceData = (payload, party, entryDate) => {
+  if (!payload.invoiceData) {
+    return null;
+  }
+
+  return JSON.stringify({
+    ...payload.invoiceData,
+    partyName: payload.invoiceData.partyName || party.name,
+    generatedAt: entryDate.toISOString(),
+  });
+};
 
 export const partyService = {
   async listParties(userId, search = '') {
@@ -149,6 +176,7 @@ export const partyService = {
          date,
          type,
          reference,
+         invoice_data AS invoiceData,
          debit_amount AS debitAmount,
          credit_amount AS creditAmount,
          balance,
@@ -185,10 +213,25 @@ export const partyService = {
 
       const amount = Number(payload.amount);
       const isSale = payload.type === 'sale';
+      const invoiceData = payload.invoiceData ?? null;
+
+      if (invoiceData && !isSale) {
+        throw new AppError('Invoice data can only be attached to sale entries', StatusCodes.BAD_REQUEST);
+      }
+
+      if (invoiceData) {
+        const roundedInvoiceTotal = roundCurrency(invoiceData.total);
+        const roundedAmount = roundCurrency(amount);
+        if (roundedInvoiceTotal !== roundedAmount) {
+          throw new AppError('Invoice total must match the sale amount', StatusCodes.BAD_REQUEST);
+        }
+      }
+
       const updatedBalance = Number(party.currentBalance) + (isSale ? amount : -amount);
       const updatedDebit = isSale ? Number(party.totalDebit) + amount : Number(party.totalDebit);
       const updatedCredit = isSale ? Number(party.totalCredit) : Number(party.totalCredit) + amount;
       const entryDate = payload.date ? new Date(payload.date) : new Date();
+      const serializedInvoiceData = serializeInvoiceData(payload, party, entryDate);
 
       await connection.query(
         `UPDATE parties
@@ -212,13 +255,14 @@ export const partyService = {
 
       const [insertResult] = await connection.query(
         `INSERT INTO ledger_entries
-         (party_id, date, type, reference, debit_amount, credit_amount, balance, status_label, created_by)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (party_id, date, type, reference, invoice_data, debit_amount, credit_amount, balance, status_label, created_by)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           partyId,
           entryDate,
           payload.type,
           payload.reference,
+          serializedInvoiceData,
           isSale ? amount : null,
           isSale ? null : amount,
           updatedBalance,
@@ -234,6 +278,7 @@ export const partyService = {
            date,
            type,
            reference,
+           invoice_data AS invoiceData,
            debit_amount AS debitAmount,
            credit_amount AS creditAmount,
            balance,
