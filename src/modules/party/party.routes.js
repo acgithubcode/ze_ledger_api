@@ -9,6 +9,7 @@ import {
   addLedgerEntrySchema,
   createPartySchema,
   importSalesSchema,
+  ledgerEntryIdSchema,
   partyIdSchema,
   partyListSchema,
 } from './party.validation.js';
@@ -26,6 +27,11 @@ partyRouter.post(
   '/:partyId/ledger-entries',
   validate(addLedgerEntrySchema),
   asyncHandler(partyController.addLedgerEntry),
+);
+partyRouter.delete(
+  '/:partyId/ledger-entries/:entryId',
+  validate(ledgerEntryIdSchema),
+  asyncHandler(partyController.deleteLedgerEntry),
 );
 partyRouter.get('/:partyId/summary', validate(partyIdSchema), asyncHandler(dashboardController.partySummary));
 

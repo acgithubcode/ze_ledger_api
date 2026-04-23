@@ -29,6 +29,15 @@ export const partyController = {
     sendResponse(response, StatusCodes.CREATED, 'Ledger entry created successfully', result);
   },
 
+  async deleteLedgerEntry(request, response) {
+    const result = await partyService.deleteLedgerEntry(
+      request.user.id,
+      request.params.partyId,
+      request.params.entryId,
+    );
+    sendResponse(response, StatusCodes.OK, 'Ledger entry deleted successfully', result);
+  },
+
   async importSales(request, response) {
     const result = await partyService.importSales(request.user.id, request.body);
     sendResponse(response, StatusCodes.CREATED, 'Sales imported successfully', result);

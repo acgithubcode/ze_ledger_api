@@ -307,6 +307,122 @@ export const partyService = {
     });
   },
 
+  async deleteLedgerEntry(userId, partyId, entryId) {
+    return withTransaction(async (connection) => {
+      const [partyRows] = await connection.query(
+        `SELECT
+           id,
+           current_balance AS currentBalance,
+           total_debit AS totalDebit,
+           total_credit AS totalCredit,
+           last_payment_date AS lastPaymentDate
+         FROM parties
+         WHERE id = ? AND created_by = ?
+         FOR UPDATE`,
+        [partyId, userId],
+      );
+      const party = partyRows[0];
+
+      if (!party) {
+        throw new AppError('Party not found', StatusCodes.NOT_FOUND);
+      }
+
+      const [entryRows] = await connection.query(
+        `SELECT
+           id,
+           party_id AS partyId,
+           date,
+           type,
+           reference,
+           debit_amount AS debitAmount,
+           credit_amount AS creditAmount,
+           balance,
+           created_at AS createdAt
+         FROM ledger_entries
+         WHERE id = ? AND party_id = ? AND created_by = ?
+         LIMIT 1
+         FOR UPDATE`,
+        [entryId, partyId, userId],
+      );
+      const entry = entryRows[0];
+
+      if (!entry) {
+        throw new AppError('Ledger entry not found', StatusCodes.NOT_FOUND);
+      }
+
+      if (entry.type !== 'sale') {
+        throw new AppError('Only sale entries can be deleted', StatusCodes.BAD_REQUEST);
+      }
+
+      const amount = Number(entry.debitAmount ?? 0);
+
+      await connection.query(
+        `DELETE FROM ledger_entries
+         WHERE id = ? AND party_id = ? AND created_by = ?`,
+        [entryId, partyId, userId],
+      );
+
+      await connection.query(
+        `UPDATE ledger_entries
+         SET balance = balance - ?
+         WHERE party_id = ? AND created_by = ?
+           AND (
+             date > ?
+             OR (date = ? AND created_at > ?)
+             OR (date = ? AND created_at = ? AND id > ?)
+           )`,
+        [
+          amount,
+          partyId,
+          userId,
+          entry.date,
+          entry.date,
+          entry.createdAt,
+          entry.date,
+          entry.createdAt,
+          entry.id,
+        ],
+      );
+
+      const updatedBalance = Number(party.currentBalance) - amount;
+      const updatedDebit = Number(party.totalDebit) - amount;
+
+      const [latestPaymentRows] = await connection.query(
+        `SELECT date
+         FROM ledger_entries
+         WHERE party_id = ? AND created_by = ? AND type = 'payment'
+         ORDER BY date DESC, created_at DESC, id DESC
+         LIMIT 1`,
+        [partyId, userId],
+      );
+
+      await connection.query(
+        `UPDATE parties
+         SET current_balance = ?,
+             total_debit = ?,
+             closing_balance = ?,
+             status = ?,
+             last_payment_date = ?
+         WHERE id = ?`,
+        [
+          updatedBalance,
+          updatedDebit,
+          updatedBalance,
+          updatedBalance >= 0 ? 'Dr' : 'Cr',
+          latestPaymentRows[0]?.date ?? null,
+          partyId,
+        ],
+      );
+
+      return {
+        id: String(entry.id),
+        partyId: String(entry.partyId),
+        type: entry.type,
+        amount,
+      };
+    });
+  },
+
   async importSales(userId, payload) {
     return withTransaction(async (connection) => {
       const [partyRows] = await connection.query(

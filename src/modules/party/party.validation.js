@@ -15,6 +15,13 @@ export const partyIdSchema = Joi.object({
   }).required(),
 });
 
+export const ledgerEntryIdSchema = Joi.object({
+  params: Joi.object({
+    partyId: Joi.number().integer().positive().required(),
+    entryId: Joi.number().integer().positive().required(),
+  }).required(),
+});
+
 export const addLedgerEntrySchema = Joi.object({
   params: Joi.object({
     partyId: Joi.number().integer().positive().required(),
