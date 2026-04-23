@@ -4,6 +4,7 @@ export const createPartySchema = Joi.object({
   body: Joi.object({
     name: Joi.string().trim().min(2).max(120).required(),
     phone: Joi.string().trim().min(8).max(20).required(),
+    gstin: Joi.string().trim().allow('').max(30).optional(),
     openingBalance: Joi.number().precision(2).default(0),
   }).required(),
 });

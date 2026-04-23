@@ -44,6 +44,7 @@ const createTables = async () => {
       id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
       name VARCHAR(120) NOT NULL,
       phone VARCHAR(20) NOT NULL,
+      gstin VARCHAR(30) NULL,
       current_balance DECIMAL(12,2) NOT NULL DEFAULT 0,
       status ENUM('Dr', 'Cr') NOT NULL DEFAULT 'Dr',
       opening_balance DECIMAL(12,2) NOT NULL DEFAULT 0,
@@ -60,6 +61,8 @@ const createTables = async () => {
       CONSTRAINT fk_parties_created_by FOREIGN KEY (created_by) REFERENCES users (id) ON DELETE CASCADE
     )
   `);
+
+  await ensureColumn('parties', 'gstin', 'VARCHAR(30) NULL AFTER phone');
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS ledger_entries (

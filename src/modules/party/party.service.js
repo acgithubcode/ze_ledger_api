@@ -7,6 +7,7 @@ const formatParty = (party) => ({
   id: String(party.id),
   name: party.name,
   phone: party.phone,
+  gstin: party.gstin || '',
   currentBalance: Number(party.currentBalance),
   status: party.status,
   openingBalance: Number(party.openingBalance),
@@ -73,6 +74,7 @@ export const partyService = {
          id,
          name,
          phone,
+         gstin,
          current_balance AS currentBalance,
          status,
          opening_balance AS openingBalance,
@@ -126,9 +128,19 @@ export const partyService = {
 
       const [result] = await connection.query(
         `INSERT INTO parties
-         (name, phone, current_balance, status, opening_balance, last_payment_date, total_debit, total_credit, closing_balance, created_by)
-         VALUES (?, ?, ?, ?, ?, NULL, ?, 0, ?, ?)`,
-        [payload.name, payload.phone, openingBalance, initialStatus, openingBalance, totalDebit, openingBalance, userId],
+         (name, phone, gstin, current_balance, status, opening_balance, last_payment_date, total_debit, total_credit, closing_balance, created_by)
+         VALUES (?, ?, ?, ?, ?, ?, NULL, ?, 0, ?, ?)`,
+        [
+          payload.name,
+          payload.phone,
+          payload.gstin?.trim() || null,
+          openingBalance,
+          initialStatus,
+          openingBalance,
+          totalDebit,
+          openingBalance,
+          userId,
+        ],
       );
 
       if (openingBalance > 0) {
@@ -145,6 +157,7 @@ export const partyService = {
            id,
            name,
            phone,
+           gstin,
            current_balance AS currentBalance,
            status,
            opening_balance AS openingBalance,
@@ -297,13 +310,14 @@ export const partyService = {
   async importSales(userId, payload) {
     return withTransaction(async (connection) => {
       const [partyRows] = await connection.query(
-        `SELECT
-           id,
-           name,
-           phone,
-           current_balance AS currentBalance,
-           status,
-           opening_balance AS openingBalance,
+      `SELECT
+         id,
+         name,
+         phone,
+         gstin,
+         current_balance AS currentBalance,
+         status,
+         opening_balance AS openingBalance,
            last_payment_date AS lastPaymentDate,
            total_debit AS totalDebit,
            total_credit AS totalCredit,
@@ -331,9 +345,9 @@ export const partyService = {
         if (!party && payload.createMissingParties) {
           const [createPartyResult] = await connection.query(
             `INSERT INTO parties
-             (name, phone, current_balance, status, opening_balance, last_payment_date, total_debit, total_credit, closing_balance, created_by)
-             VALUES (?, ?, 0, 'Dr', 0, NULL, 0, 0, 0, ?)`,
-            [row.partyName.trim(), row.gstin?.trim() || '0000000000', userId],
+             (name, phone, gstin, current_balance, status, opening_balance, last_payment_date, total_debit, total_credit, closing_balance, created_by)
+             VALUES (?, ?, ?, 0, 'Dr', 0, NULL, 0, 0, 0, ?)`,
+            [row.partyName.trim(), '0000000000', row.gstin?.trim() || null, userId],
           );
 
           const [newPartyRows] = await connection.query(
@@ -341,6 +355,7 @@ export const partyService = {
                id,
                name,
                phone,
+               gstin,
                current_balance AS currentBalance,
                status,
                opening_balance AS openingBalance,
