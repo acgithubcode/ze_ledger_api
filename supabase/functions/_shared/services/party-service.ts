@@ -1,15 +1,14 @@
-import { StatusCodes } from 'http-status-codes';
+import type { DbClient } from '../db.ts';
+import { withTransaction } from '../db.ts';
+import { AppError } from '../errors.ts';
 
-import { AppError } from '../../common/errors/app-error.js';
-import { getPool, withTransaction } from '../../config/database.js';
-
-const formatParty = (party) => ({
+const formatParty = (party: Record<string, unknown>) => ({
   id: String(party.id),
-  name: party.name,
-  phone: party.phone,
-  gstin: party.gstin || '',
+  name: String(party.name),
+  phone: String(party.phone),
+  gstin: String(party.gstin ?? ''),
   currentBalance: Number(party.currentBalance),
-  status: party.status,
+  status: String(party.status),
   openingBalance: Number(party.openingBalance),
   lastPaymentDate: party.lastPaymentDate,
   totalDebit: Number(party.totalDebit),
@@ -19,57 +18,71 @@ const formatParty = (party) => ({
   updatedAt: party.updatedAt,
 });
 
-const formatEntry = (entry) => ({
+const parseInvoiceData = (value: unknown) => {
+  if (!value) {
+    return null;
+  }
+
+  if (typeof value === 'object') {
+    return value;
+  }
+
+  if (typeof value === 'string') {
+    try {
+      return JSON.parse(value);
+    } catch {
+      return null;
+    }
+  }
+
+  return null;
+};
+
+const formatEntry = (entry: Record<string, unknown>) => ({
   id: String(entry.id),
   partyId: String(entry.partyId),
   date: entry.date,
-  type: entry.type,
-  reference: entry.reference,
+  type: String(entry.type),
+  reference: String(entry.reference),
   invoiceData: parseInvoiceData(entry.invoiceData),
   debitAmount: entry.debitAmount === null ? null : Number(entry.debitAmount),
   creditAmount: entry.creditAmount === null ? null : Number(entry.creditAmount),
   balance: Number(entry.balance),
-  statusLabel: entry.statusLabel,
+  statusLabel: String(entry.statusLabel),
   createdAt: entry.createdAt,
   updatedAt: entry.updatedAt,
 });
 
-const normalizeKey = (value) =>
+const normalizeKey = (value: unknown) =>
   String(value ?? '')
     .trim()
     .replace(/\s+/g, ' ')
     .toUpperCase();
 
-const parseInvoiceData = (value) => {
-  if (!value) {
+const roundCurrency = (value: unknown) => Number(Number(value).toFixed(2));
+
+const serializeInvoiceData = (
+  payload: Record<string, unknown>,
+  party: Record<string, unknown>,
+  entryDate: Date,
+) => {
+  if (!payload.invoiceData || typeof payload.invoiceData !== 'object') {
     return null;
   }
 
-  try {
-    return JSON.parse(value);
-  } catch {
-    return null;
-  }
-};
-
-const roundCurrency = (value) => Number(Number(value).toFixed(2));
-
-const serializeInvoiceData = (payload, party, entryDate) => {
-  if (!payload.invoiceData) {
-    return null;
-  }
+  const invoiceData = payload.invoiceData as Record<string, unknown>;
 
   return JSON.stringify({
-    ...payload.invoiceData,
-    partyName: payload.invoiceData.partyName || party.name,
+    ...invoiceData,
+    partyName: invoiceData.partyName || party.name,
     generatedAt: entryDate.toISOString(),
   });
 };
 
 export const partyService = {
-  async listParties(userId, search = '') {
+  async listParties(db: DbClient, userId: string | number, search = '') {
     const searchPattern = `%${search}%`;
-    const [parties] = await getPool().query(
+    const parties = await db.query<Record<string, unknown>>(
       `SELECT
          id,
          name,
@@ -85,20 +98,22 @@ export const partyService = {
          created_at AS "createdAt",
          updated_at AS "updatedAt"
        FROM parties
-       WHERE created_by = ?
-         AND (? = '' OR name LIKE ? OR phone LIKE ?)
+       WHERE created_by = $1
+         AND ($2 = '' OR name ILIKE $3 OR phone ILIKE $3)
        ORDER BY updated_at DESC`,
-      [userId, search, searchPattern, searchPattern],
+      [userId, search, searchPattern],
     );
+
     return parties.map(formatParty);
   },
 
-  async getPartyById(userId, partyId) {
-    const [rows] = await getPool().query(
+  async getPartyById(db: DbClient, userId: string | number, partyId: string | number) {
+    const rows = await db.query<Record<string, unknown>>(
       `SELECT
          id,
          name,
          phone,
+         gstin,
          current_balance AS "currentBalance",
          status,
          opening_balance AS "openingBalance",
@@ -109,31 +124,36 @@ export const partyService = {
          created_at AS "createdAt",
          updated_at AS "updatedAt"
        FROM parties
-       WHERE id = ? AND created_by = ?`,
+       WHERE id = $1 AND created_by = $2`,
       [partyId, userId],
     );
+
     const party = rows[0];
+
     if (!party) {
-      throw new AppError('Party not found', StatusCodes.NOT_FOUND);
+      throw new AppError('Party not found', 404);
     }
 
     return formatParty(party);
   },
 
-  async createParty(userId, payload) {
-    return withTransaction(async (connection) => {
+  async createParty(userId: string | number, payload: Record<string, unknown>) {
+    return withTransaction(async (db) => {
       const openingBalance = Number(payload.openingBalance ?? 0);
       const initialStatus = openingBalance >= 0 ? 'Dr' : 'Cr';
       const totalDebit = openingBalance > 0 ? openingBalance : 0;
 
-      const [result] = await connection.query(
+      const rows = await db.query<Record<string, unknown>>(
         `INSERT INTO parties
          (name, phone, gstin, current_balance, status, opening_balance, last_payment_date, total_debit, total_credit, closing_balance, created_by)
-         VALUES (?, ?, ?, ?, ?, ?, NULL, ?, 0, ?, ?)`,
+         VALUES ($1, $2, $3, $4, $5, $6, NULL, $7, 0, $8, $9)
+         RETURNING id, name, phone, gstin, current_balance AS "currentBalance", status, opening_balance AS "openingBalance",
+                   last_payment_date AS "lastPaymentDate", total_debit AS "totalDebit", total_credit AS "totalCredit",
+                   closing_balance AS "closingBalance", created_at AS "createdAt", updated_at AS "updatedAt"`,
         [
           payload.name,
           payload.phone,
-          payload.gstin?.trim() || null,
+          String(payload.gstin ?? '').trim() || null,
           openingBalance,
           initialStatus,
           openingBalance,
@@ -143,46 +163,32 @@ export const partyService = {
         ],
       );
 
+      const party = rows[0];
+
       if (openingBalance > 0) {
-        await connection.query(
+        await db.query(
           `INSERT INTO ledger_entries
            (party_id, date, type, reference, debit_amount, credit_amount, balance, status_label, created_by)
-           VALUES (?, ?, 'opening_balance', 'Opening', NULL, NULL, ?, 'Opening', ?)`,
-          [result.insertId, new Date(), openingBalance, userId],
+           VALUES ($1, $2, 'opening_balance', 'Opening', NULL, NULL, $3, 'Opening', $4)`,
+          [party.id, new Date(), openingBalance, userId],
         );
       }
 
-      const [rows] = await connection.query(
-        `SELECT
-           id,
-           name,
-           phone,
-           gstin,
-           current_balance AS "currentBalance",
-           status,
-           opening_balance AS "openingBalance",
-           last_payment_date AS "lastPaymentDate",
-           total_debit AS "totalDebit",
-           total_credit AS "totalCredit",
-           closing_balance AS "closingBalance",
-           created_at AS "createdAt",
-           updated_at AS "updatedAt"
-         FROM parties
-         WHERE id = ?`,
-        [result.insertId],
-      );
-
-      return formatParty(rows[0]);
+      return formatParty(party);
     });
   },
 
-  async listLedgerEntries(userId, partyId) {
-    const [partyRows] = await getPool().query('SELECT id FROM parties WHERE id = ? AND created_by = ?', [partyId, userId]);
+  async listLedgerEntries(db: DbClient, userId: string | number, partyId: string | number) {
+    const partyRows = await db.query<{ id: number }>(
+      'SELECT id FROM parties WHERE id = $1 AND created_by = $2',
+      [partyId, userId],
+    );
+
     if (partyRows.length === 0) {
-      throw new AppError('Party not found', StatusCodes.NOT_FOUND);
+      throw new AppError('Party not found', 404);
     }
 
-    const [entries] = await getPool().query(
+    const entries = await db.query<Record<string, unknown>>(
       `SELECT
          id,
          party_id AS "partyId",
@@ -197,64 +203,68 @@ export const partyService = {
          created_at AS "createdAt",
          updated_at AS "updatedAt"
        FROM ledger_entries
-       WHERE party_id = ? AND created_by = ?
+       WHERE party_id = $1 AND created_by = $2
        ORDER BY date DESC, created_at DESC`,
       [partyId, userId],
     );
+
     return entries.map(formatEntry);
   },
 
-  async addLedgerEntry(userId, partyId, payload) {
-    return withTransaction(async (connection) => {
-      const [partyRows] = await connection.query(
+  async addLedgerEntry(userId: string | number, partyId: string | number, payload: Record<string, unknown>) {
+    return withTransaction(async (db) => {
+      const partyRows = await db.query<Record<string, unknown>>(
         `SELECT
            id,
+           name,
            current_balance AS "currentBalance",
            total_debit AS "totalDebit",
            total_credit AS "totalCredit",
            last_payment_date AS "lastPaymentDate"
          FROM parties
-         WHERE id = ? AND created_by = ?
+         WHERE id = $1 AND created_by = $2
          FOR UPDATE`,
         [partyId, userId],
       );
+
       const party = partyRows[0];
 
       if (!party) {
-          throw new AppError('Party not found', StatusCodes.NOT_FOUND);
+        throw new AppError('Party not found', 404);
       }
 
       const amount = Number(payload.amount);
       const isSale = payload.type === 'sale';
-      const invoiceData = payload.invoiceData ?? null;
+      const invoiceData = payload.invoiceData as Record<string, unknown> | undefined;
 
       if (invoiceData && !isSale) {
-        throw new AppError('Invoice data can only be attached to sale entries', StatusCodes.BAD_REQUEST);
+        throw new AppError('Invoice data can only be attached to sale entries', 400);
       }
 
       if (invoiceData) {
         const roundedInvoiceTotal = roundCurrency(invoiceData.total);
         const roundedAmount = roundCurrency(amount);
+
         if (roundedInvoiceTotal !== roundedAmount) {
-          throw new AppError('Invoice total must match the sale amount', StatusCodes.BAD_REQUEST);
+          throw new AppError('Invoice total must match the sale amount', 400);
         }
       }
 
       const updatedBalance = Number(party.currentBalance) + (isSale ? amount : -amount);
       const updatedDebit = isSale ? Number(party.totalDebit) + amount : Number(party.totalDebit);
       const updatedCredit = isSale ? Number(party.totalCredit) : Number(party.totalCredit) + amount;
-      const entryDate = payload.date ? new Date(payload.date) : new Date();
+      const entryDate = payload.date ? new Date(String(payload.date)) : new Date();
       const serializedInvoiceData = serializeInvoiceData(payload, party, entryDate);
 
-      await connection.query(
+      await db.query(
         `UPDATE parties
-         SET current_balance = ?,
-             total_debit = ?,
-             total_credit = ?,
-             closing_balance = ?,
-             status = ?,
-             last_payment_date = ?
-         WHERE id = ?`,
+         SET current_balance = $1,
+             total_debit = $2,
+             total_credit = $3,
+             closing_balance = $4,
+             status = $5,
+             last_payment_date = $6
+         WHERE id = $7`,
         [
           updatedBalance,
           updatedDebit,
@@ -266,10 +276,13 @@ export const partyService = {
         ],
       );
 
-      const [insertResult] = await connection.query(
+      const rows = await db.query<Record<string, unknown>>(
         `INSERT INTO ledger_entries
          (party_id, date, type, reference, invoice_data, debit_amount, credit_amount, balance, status_label, created_by)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10)
+         RETURNING id, party_id AS "partyId", date, type, reference, invoice_data AS "invoiceData",
+                   debit_amount AS "debitAmount", credit_amount AS "creditAmount", balance,
+                   status_label AS "statusLabel", created_at AS "createdAt", updated_at AS "updatedAt"`,
         [
           partyId,
           entryDate,
@@ -284,32 +297,13 @@ export const partyService = {
         ],
       );
 
-      const [rows] = await connection.query(
-        `SELECT
-           id,
-           party_id AS "partyId",
-           date,
-           type,
-           reference,
-           invoice_data AS "invoiceData",
-           debit_amount AS "debitAmount",
-           credit_amount AS "creditAmount",
-           balance,
-           status_label AS "statusLabel",
-           created_at AS "createdAt",
-           updated_at AS "updatedAt"
-         FROM ledger_entries
-         WHERE id = ?`,
-        [insertResult.insertId],
-      );
-
       return formatEntry(rows[0]);
     });
   },
 
-  async deleteLedgerEntry(userId, partyId, entryId) {
-    return withTransaction(async (connection) => {
-      const [partyRows] = await connection.query(
+  async deleteLedgerEntry(userId: string | number, partyId: string | number, entryId: string | number) {
+    return withTransaction(async (db) => {
+      const partyRows = await db.query<Record<string, unknown>>(
         `SELECT
            id,
            current_balance AS "currentBalance",
@@ -317,17 +311,18 @@ export const partyService = {
            total_credit AS "totalCredit",
            last_payment_date AS "lastPaymentDate"
          FROM parties
-         WHERE id = ? AND created_by = ?
+         WHERE id = $1 AND created_by = $2
          FOR UPDATE`,
         [partyId, userId],
       );
+
       const party = partyRows[0];
 
       if (!party) {
-        throw new AppError('Party not found', StatusCodes.NOT_FOUND);
+        throw new AppError('Party not found', 404);
       }
 
-      const [entryRows] = await connection.query(
+      const entryRows = await db.query<Record<string, unknown>>(
         `SELECT
            id,
            party_id AS "partyId",
@@ -339,37 +334,38 @@ export const partyService = {
            balance,
            created_at AS "createdAt"
          FROM ledger_entries
-         WHERE id = ? AND party_id = ? AND created_by = ?
+         WHERE id = $1 AND party_id = $2 AND created_by = $3
          LIMIT 1
          FOR UPDATE`,
         [entryId, partyId, userId],
       );
+
       const entry = entryRows[0];
 
       if (!entry) {
-        throw new AppError('Ledger entry not found', StatusCodes.NOT_FOUND);
+        throw new AppError('Ledger entry not found', 404);
       }
 
       if (entry.type !== 'sale') {
-        throw new AppError('Only sale entries can be deleted', StatusCodes.BAD_REQUEST);
+        throw new AppError('Only sale entries can be deleted', 400);
       }
 
       const amount = Number(entry.debitAmount ?? 0);
 
-      await connection.query(
+      await db.query(
         `DELETE FROM ledger_entries
-         WHERE id = ? AND party_id = ? AND created_by = ?`,
+         WHERE id = $1 AND party_id = $2 AND created_by = $3`,
         [entryId, partyId, userId],
       );
 
-      await connection.query(
+      await db.query(
         `UPDATE ledger_entries
-         SET balance = balance - ?
-         WHERE party_id = ? AND created_by = ?
+         SET balance = balance - $1
+         WHERE party_id = $2 AND created_by = $3
            AND (
-             date > ?
-             OR (date = ? AND created_at > ?)
-             OR (date = ? AND created_at = ? AND id > ?)
+             date > $4
+             OR (date = $5 AND created_at > $6)
+             OR (date = $7 AND created_at = $8 AND id > $9)
            )`,
         [
           amount,
@@ -386,24 +382,23 @@ export const partyService = {
 
       const updatedBalance = Number(party.currentBalance) - amount;
       const updatedDebit = Number(party.totalDebit) - amount;
-
-      const [latestPaymentRows] = await connection.query(
+      const latestPaymentRows = await db.query<{ date: string | null }>(
         `SELECT date
          FROM ledger_entries
-         WHERE party_id = ? AND created_by = ? AND type = 'payment'
+         WHERE party_id = $1 AND created_by = $2 AND type = 'payment'
          ORDER BY date DESC, created_at DESC, id DESC
          LIMIT 1`,
         [partyId, userId],
       );
 
-      await connection.query(
+      await db.query(
         `UPDATE parties
-         SET current_balance = ?,
-             total_debit = ?,
-             closing_balance = ?,
-             status = ?,
-             last_payment_date = ?
-         WHERE id = ?`,
+         SET current_balance = $1,
+             total_debit = $2,
+             closing_balance = $3,
+             status = $4,
+             last_payment_date = $5
+         WHERE id = $6`,
         [
           updatedBalance,
           updatedDebit,
@@ -417,23 +412,23 @@ export const partyService = {
       return {
         id: String(entry.id),
         partyId: String(entry.partyId),
-        type: entry.type,
+        type: String(entry.type),
         amount,
       };
     });
   },
 
-  async importSales(userId, payload) {
-    return withTransaction(async (connection) => {
-      const [partyRows] = await connection.query(
-      `SELECT
-         id,
-         name,
-         phone,
-         gstin,
-         current_balance AS "currentBalance",
-         status,
-         opening_balance AS "openingBalance",
+  async importSales(userId: string | number, payload: { createMissingParties?: boolean; rows: Record<string, unknown>[] }) {
+    return withTransaction(async (db) => {
+      const partyRows = await db.query<Record<string, unknown>>(
+        `SELECT
+           id,
+           name,
+           phone,
+           gstin,
+           current_balance AS "currentBalance",
+           status,
+           opening_balance AS "openingBalance",
            last_payment_date AS "lastPaymentDate",
            total_debit AS "totalDebit",
            total_credit AS "totalCredit",
@@ -441,51 +436,33 @@ export const partyService = {
            created_at AS "createdAt",
            updated_at AS "updatedAt"
          FROM parties
-         WHERE created_by = ?`,
+         WHERE created_by = $1`,
         [userId],
       );
 
-      const partyMap = new Map(
-        partyRows.map((party) => [normalizeKey(party.name), { ...party }]),
-      );
-      const createdParties = [];
-      const imported = [];
-      const duplicates = [];
-      const skipped = [];
+      const partyMap = new Map(partyRows.map((party) => [normalizeKey(party.name), { ...party }]));
+      const createdParties: ReturnType<typeof formatParty>[] = [];
+      const imported: Record<string, unknown>[] = [];
+      const duplicates: Record<string, unknown>[] = [];
+      const skipped: Record<string, unknown>[] = [];
 
       for (const row of payload.rows) {
         const normalizedPartyName = normalizeKey(row.partyName);
         let party = partyMap.get(normalizedPartyName);
-        const importReference = `${row.reference.trim()} (${row.monthName})`;
+        const importReference = `${String(row.reference).trim()} (${String(row.monthName)})`;
 
         if (!party && payload.createMissingParties) {
-          const [createPartyResult] = await connection.query(
+          const createdRows = await db.query<Record<string, unknown>>(
             `INSERT INTO parties
              (name, phone, gstin, current_balance, status, opening_balance, last_payment_date, total_debit, total_credit, closing_balance, created_by)
-             VALUES (?, ?, ?, 0, 'Dr', 0, NULL, 0, 0, 0, ?)`,
-            [row.partyName.trim(), '0000000000', row.gstin?.trim() || null, userId],
+             VALUES ($1, $2, $3, 0, 'Dr', 0, NULL, 0, 0, 0, $4)
+             RETURNING id, name, phone, gstin, current_balance AS "currentBalance", status, opening_balance AS "openingBalance",
+                       last_payment_date AS "lastPaymentDate", total_debit AS "totalDebit", total_credit AS "totalCredit",
+                       closing_balance AS "closingBalance", created_at AS "createdAt", updated_at AS "updatedAt"`,
+            [String(row.partyName).trim(), '0000000000', String(row.gstin ?? '').trim() || null, userId],
           );
 
-          const [newPartyRows] = await connection.query(
-            `SELECT
-               id,
-               name,
-               phone,
-               gstin,
-               current_balance AS "currentBalance",
-               status,
-               opening_balance AS "openingBalance",
-               last_payment_date AS "lastPaymentDate",
-               total_debit AS "totalDebit",
-               total_credit AS "totalCredit",
-               closing_balance AS "closingBalance",
-               created_at AS "createdAt",
-               updated_at AS "updatedAt"
-             FROM parties
-             WHERE id = ?`,
-            [createPartyResult.insertId],
-          );
-          party = newPartyRows[0];
+          party = createdRows[0];
           partyMap.set(normalizedPartyName, { ...party });
           createdParties.push(formatParty(party));
         }
@@ -500,10 +477,10 @@ export const partyService = {
           continue;
         }
 
-        const [duplicateRows] = await connection.query(
+        const duplicateRows = await db.query<{ id: number }>(
           `SELECT id
            FROM ledger_entries
-           WHERE created_by = ? AND party_id = ? AND type = 'sale' AND reference = ?
+           WHERE created_by = $1 AND party_id = $2 AND type = 'sale' AND reference = $3
            LIMIT 1`,
           [userId, party.id, importReference],
         );
@@ -520,22 +497,23 @@ export const partyService = {
         const amount = Number(row.amount);
         const updatedBalance = Number(party.currentBalance) + amount;
         const updatedDebit = Number(party.totalDebit) + amount;
-        const entryDate = new Date(row.date);
+        const entryDate = new Date(String(row.date));
 
-        await connection.query(
+        await db.query(
           `UPDATE parties
-           SET current_balance = ?,
-               total_debit = ?,
-               closing_balance = ?,
+           SET current_balance = $1,
+               total_debit = $2,
+               closing_balance = $3,
                status = 'Dr'
-           WHERE id = ?`,
+           WHERE id = $4`,
           [updatedBalance, updatedDebit, updatedBalance, party.id],
         );
 
-        const [insertResult] = await connection.query(
+        const rows = await db.query<Record<string, unknown>>(
           `INSERT INTO ledger_entries
            (party_id, date, type, reference, debit_amount, credit_amount, balance, status_label, created_by)
-           VALUES (?, ?, 'sale', ?, ?, NULL, ?, 'Imported', ?)`,
+           VALUES ($1, $2, 'sale', $3, $4, NULL, $5, 'Imported', $6)
+           RETURNING id`,
           [party.id, entryDate, importReference, amount, updatedBalance, userId],
         );
 
@@ -546,7 +524,7 @@ export const partyService = {
         partyMap.set(normalizedPartyName, party);
 
         imported.push({
-          id: String(insertResult.insertId),
+          id: String(rows[0].id),
           monthName: row.monthName,
           reference: importReference,
           partyId: String(party.id),

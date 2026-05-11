@@ -1,0 +1,4 @@
+project_id = "ze-ledger-api"
+
+[functions.api]
+verify_jwt = false

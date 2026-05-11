@@ -2,7 +2,7 @@
 
 ## Goal
 
-Provide a backend that maps to the Flutter app's business operations and is ready to grow beyond a demo-only Firebase setup, using MySQL as the primary relational database.
+Provide a backend that maps to the Flutter app's business operations and is ready to grow beyond a demo-only Firebase setup, using PostgreSQL as the primary relational database.
 
 ## Core modules
 

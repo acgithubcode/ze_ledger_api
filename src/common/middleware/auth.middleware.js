@@ -18,7 +18,7 @@ export const authenticate = async (request, _response, next) => {
 
     const decoded = jwt.verify(token, env.jwtSecret);
     const [rows] = await getPool().query(
-      `SELECT id, name, email, role, is_guest AS isGuest, created_at AS createdAt, updated_at AS updatedAt
+      `SELECT id, name, email, role, is_guest AS "isGuest", created_at AS "createdAt", updated_at AS "updatedAt"
        FROM users
        WHERE id = ?`,
       [decoded.sub],

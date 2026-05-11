@@ -44,7 +44,7 @@ export const authService = {
       [payload.name, email, hashedPassword],
     );
     const [rows] = await getPool().query(
-      `SELECT id, name, email, role, is_guest AS isGuest, created_at AS createdAt, updated_at AS updatedAt
+      `SELECT id, name, email, role, is_guest AS "isGuest", created_at AS "createdAt", updated_at AS "updatedAt"
        FROM users WHERE id = ?`,
       [result.insertId],
     );
@@ -58,7 +58,7 @@ export const authService = {
 
   async login(payload) {
     const [rows] = await getPool().query(
-      `SELECT id, name, email, password, role, is_guest AS isGuest, created_at AS createdAt, updated_at AS updatedAt
+      `SELECT id, name, email, password, role, is_guest AS "isGuest", created_at AS "createdAt", updated_at AS "updatedAt"
        FROM users WHERE email = ?`,
       [payload.email.toLowerCase()],
     );
@@ -88,7 +88,7 @@ export const authService = {
       [payload.name, `guest_${timestamp}@zeledger.local`, hashedPassword],
     );
     const [rows] = await getPool().query(
-      `SELECT id, name, email, role, is_guest AS isGuest, created_at AS createdAt, updated_at AS updatedAt
+      `SELECT id, name, email, role, is_guest AS "isGuest", created_at AS "createdAt", updated_at AS "updatedAt"
        FROM users WHERE id = ?`,
       [result.insertId],
     );
@@ -102,7 +102,7 @@ export const authService = {
 
   async getProfile(userId) {
     const [rows] = await getPool().query(
-      `SELECT id, name, email, role, is_guest AS isGuest, created_at AS createdAt, updated_at AS updatedAt
+      `SELECT id, name, email, role, is_guest AS "isGuest", created_at AS "createdAt", updated_at AS "updatedAt"
        FROM users WHERE id = ?`,
       [userId],
     );

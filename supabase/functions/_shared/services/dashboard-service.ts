@@ -1,8 +1,18 @@
-import { getPool } from '../../config/database.js';
-import { endOfDay, startOfDay } from './date-range.js';
+import type { DbClient } from '../db.ts';
+import { endOfDay, startOfDay } from '../date-range.ts';
 
-const formatCurrencySum = (value) => Number(value ?? 0);
-const formatRecentActivity = (entry) => ({
+const formatCurrencySum = (value: number | null | undefined) => Number(value ?? 0);
+
+const formatRecentActivity = (entry: {
+  id: number;
+  partyId: number;
+  partyName: string;
+  type: string;
+  reference: string;
+  debitAmount: number | null;
+  creditAmount: number | null;
+  date: string;
+}) => ({
   id: String(entry.id),
   partyId: String(entry.partyId),
   partyName: entry.partyName,
@@ -23,41 +33,43 @@ const recentActivityQuery = `SELECT
   p.name AS "partyName"
  FROM ledger_entries l
  INNER JOIN parties p ON p.id = l.party_id
- WHERE l.created_by = ?
+ WHERE l.created_by = $1
  ORDER BY l.date DESC, l.created_at DESC
- LIMIT ?`;
+ LIMIT $2`;
 
 export const dashboardService = {
-  async getSummary(userId) {
+  async getSummary(db: DbClient, userId: string | number) {
     const todayStart = startOfDay(new Date());
     const todayEnd = endOfDay(new Date());
 
-    const [partiesResult, salesResult, paymentsResult, recentActivityResult] = await Promise.all([
-      getPool().query(
-        'SELECT current_balance AS "currentBalance" FROM parties WHERE created_by = ?',
+    const [parties, salesEntries, paymentEntries, recentActivities] = await Promise.all([
+      db.query<{ currentBalance: number }>(
+        'SELECT current_balance AS "currentBalance" FROM parties WHERE created_by = $1',
         [userId],
       ),
-      getPool().query(
+      db.query<{ debitAmount: number | null; partyId: number }>(
         `SELECT debit_amount AS "debitAmount", party_id AS "partyId"
          FROM ledger_entries
-         WHERE created_by = ? AND type = 'sale' AND date BETWEEN ? AND ?`,
+         WHERE created_by = $1 AND type = 'sale' AND date BETWEEN $2 AND $3`,
         [userId, todayStart, todayEnd],
       ),
-      getPool().query(
+      db.query<{ creditAmount: number | null }>(
         `SELECT credit_amount AS "creditAmount"
          FROM ledger_entries
-         WHERE created_by = ? AND type = 'payment' AND date BETWEEN ? AND ?`,
+         WHERE created_by = $1 AND type = 'payment' AND date BETWEEN $2 AND $3`,
         [userId, todayStart, todayEnd],
       ),
-      getPool().query(
-        recentActivityQuery,
-        [userId, 5],
-      ),
+      db.query<{
+        id: number;
+        partyId: number;
+        partyName: string;
+        type: string;
+        reference: string;
+        debitAmount: number | null;
+        creditAmount: number | null;
+        date: string;
+      }>(recentActivityQuery, [userId, 5]),
     ]);
-    const parties = partiesResult[0];
-    const salesEntries = salesResult[0];
-    const paymentEntries = paymentsResult[0];
-    const recentActivities = recentActivityResult[0];
 
     const overdueParties = parties.filter((party) => party.currentBalance > 0);
 
@@ -81,14 +93,35 @@ export const dashboardService = {
     };
   },
 
-  async getRecentActivity(userId, limit = 50) {
-    const [rows] = await getPool().query(recentActivityQuery, [userId, limit]);
+  async getRecentActivity(db: DbClient, userId: string | number, limit = 50) {
+    const rows = await db.query<{
+      id: number;
+      partyId: number;
+      partyName: string;
+      type: string;
+      reference: string;
+      debitAmount: number | null;
+      creditAmount: number | null;
+      date: string;
+    }>(recentActivityQuery, [userId, limit]);
+
     return rows.map(formatRecentActivity);
   },
 
-  async getPartySummary(userId, partyId) {
-    const [partyResult, entriesResult] = await Promise.all([
-      getPool().query(
+  async getPartySummary(db: DbClient, userId: string | number, partyId: string | number) {
+    const [partyRows, entries] = await Promise.all([
+      db.query<{
+        id: number;
+        name: string;
+        phone: string;
+        currentBalance: number;
+        status: string;
+        openingBalance: number;
+        totalDebit: number;
+        totalCredit: number;
+        closingBalance: number;
+        lastPaymentDate: string | null;
+      }>(
         `SELECT
            id,
            name,
@@ -101,10 +134,19 @@ export const dashboardService = {
            closing_balance AS "closingBalance",
            last_payment_date AS "lastPaymentDate"
          FROM parties
-         WHERE id = ? AND created_by = ?`,
+         WHERE id = $1 AND created_by = $2`,
         [partyId, userId],
       ),
-      getPool().query(
+      db.query<{
+        id: number;
+        type: string;
+        reference: string;
+        debitAmount: number | null;
+        creditAmount: number | null;
+        balance: number;
+        statusLabel: string;
+        date: string;
+      }>(
         `SELECT
            id,
            type,
@@ -115,14 +157,14 @@ export const dashboardService = {
            status_label AS "statusLabel",
            date
          FROM ledger_entries
-         WHERE party_id = ? AND created_by = ?
+         WHERE party_id = $1 AND created_by = $2
          ORDER BY date DESC, created_at DESC
          LIMIT 5`,
         [partyId, userId],
       ),
     ]);
-    const party = partyResult[0][0];
-    const entries = entriesResult[0];
+
+    const party = partyRows[0];
 
     return {
       party: party
